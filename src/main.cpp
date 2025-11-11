@@ -1,332 +1,223 @@
-/*
- * Program FreeRTOS Multi-Task untuk ESP32-S3
- * * Mengontrol beberapa periferal secara independen di task terpisah
- * dengan prioritas yang berbeda-beda.
- *
- * * VERSI FINAL (Perbaikan Buzzer + Perbaikan Typo):
- * - Menggunakan tone()/noTone() untuk buzzer
- * - Memperbaiki typo 'portTICK_PERIOD_MS' di loop()
- *
- * PERHATIAN: PIN_BUZZER (GPIO 17) adalah pin asumsi.
- * Harap ubah wiring di Wokwi: Pindahkan kabel buzzer dari 3.3V ke GPIO 17.
-*/
-
-// 1. Termasuk Library
-#include <Arduino.h>
+// ===================== Libraries =====================
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <ESP32Servo.h>
 #include <AccelStepper.h>
 
-// 2. Definisi Pin (sesuai diagram.json Anda)
-// OLED SSD1306 (I2C)
-#define PIN_OLED_SDA 8
-#define PIN_OLED_SCL 9
+// ===================== OLED SETUP =====================
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
-// Potentiometer
-#define PIN_POT 1
-
-// Servo
-#define PIN_SERVO 18
-
-// LEDs
-#define PIN_LED_1 14 // Yellow
-#define PIN_LED_2 13 // Red
-#define PIN_LED_3 21 // White
-
-// Push Buttons
-#define PIN_BTN_1 15
-#define PIN_BTN_2 16
-
-// Rotary Encoder
-#define PIN_ENCODER_CLK 10
-#define PIN_ENCODER_DT  11
-#define PIN_ENCODER_SW  12
-
-// Stepper Motor (A4988)
-#define PIN_STEPPER_STEP   38
-#define PIN_STEPPER_DIR    39
-#define PIN_STEPPER_ENABLE 20
-
-#define STEP_PIN 18
-#define DIR_PIN 19
-
-TaskHandle_t StepperTaskHandle;
-
-const int stepsPerRev = 200;  
-volatile int stepDelayUS = 1000; 
-
-// Buzzer (Asumsi pin setelah wiring diperbaiki)
-#define PIN_BUZZER 17
-
-// 3. Inisialisasi Objek Library
-// OLED
-Adafruit_SSD1306 display(128, 64, &Wire, -1);
-
-// Servo
+// ===================== Servo ==========================
 Servo myservo;
 
-// Stepper
-// Tipe driver: 1 = Driver (STEP/DIR)
-AccelStepper stepper(AccelStepper::DRIVER, PIN_STEPPER_STEP, PIN_STEPPER_DIR);
+// ===================== Stepper ========================
+AccelStepper stepper(AccelStepper::DRIVER, 13, 12);
 
-// Variabel Global (untuk demo sederhana)
-long encoderPos = 0;
+// ===================== Encoder ========================
+volatile int encoderCount = 0;
+int lastStateCLK;
 
-// 4. Deklarasi Fungsi Task
-void taskOLED(void *pvParameters);
-void taskLEDs(void *pvParameters);
-void taskButtons(void *pvParameters);
-void taskPotentiometer(void *pvParameters);
-void taskEncoder(void *pvParameters);
-void taskServo(void *pvParameters);
-void taskStepper(void *pvParameters);
-void taskBuzzer(void *pvParameters);
+// ===================== Pin Assignments =================
+#define LED1_PIN    2
+#define LED2_PIN    5
+#define LED3_PIN    6
+#define BUZZ_PIN    4
+#define BUTTON1_PIN 15
+#define BUTTON2_PIN 7
+#define POT_PIN     1
+#define SERVO_PIN   17
+#define CLK_PIN     18
+#define DT_PIN      19
 
-// ---------------------------------------------------
-// SETUP
-// ---------------------------------------------------
-void setup() {
-  Serial.begin(115200);
-  Serial.println("--- Multi-Task Demo ESP32-S3 (Final) ---");
+// =======================================================
+// ====================== TASKS ==========================
+// =======================================================
 
-  // Inisialisasi Pin
-  pinMode(PIN_POT, INPUT);
-  pinMode(PIN_LED_1, OUTPUT);
-  pinMode(PIN_LED_2, OUTPUT);
-  pinMode(PIN_LED_3, OUTPUT);
-  pinMode(PIN_BTN_1, INPUT_PULLUP);
-  pinMode(PIN_BTN_2, INPUT_PULLUP);
-  pinMode(PIN_ENCODER_CLK, INPUT);
-  pinMode(PIN_ENCODER_DT, INPUT);
-  pinMode(PIN_ENCODER_SW, INPUT_PULLUP);
-  pinMode(PIN_STEPPER_ENABLE, OUTPUT);
-  digitalWrite(PIN_STEPPER_ENABLE, LOW); // Aktifkan driver
-  pinMode(PIN_BUZZER, OUTPUT); // Set pin buzzer sebagai OUTPUT
+// ---------- LED 1 TASK (CORE 0) ----------
+void TaskLED1(void *pvParameters) {
+  pinMode(LED1_PIN, OUTPUT);
+  while (1) {
+    digitalWrite(LED1_PIN, HIGH);
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+    digitalWrite(LED1_PIN, LOW);
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+  }
+}
 
-  // Inisialisasi I2C untuk OLED
-  Wire.begin(PIN_OLED_SDA, PIN_OLED_SCL);
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { 
-    Serial.println(F("Gagal inisialisasi SSD1306"));
-    while(1);
+// ---------- LED 2 TASK (CORE 0) ----------
+void TaskLED2(void *pvParameters) {
+  pinMode(LED2_PIN, OUTPUT);
+  while (1) {
+    digitalWrite(LED2_PIN, HIGH);
+    vTaskDelay(300 / portTICK_PERIOD_MS);
+    digitalWrite(LED2_PIN, LOW);
+    vTaskDelay(300 / portTICK_PERIOD_MS);
+  }
+}
+
+// ---------- LED 3 TASK (CORE 0) ----------
+void TaskLED3(void *pvParameters) {
+  pinMode(LED3_PIN, OUTPUT);
+  while (1) {
+    digitalWrite(LED3_PIN, HIGH);
+    vTaskDelay(700 / portTICK_PERIOD_MS);
+    digitalWrite(LED3_PIN, LOW);
+    vTaskDelay(700 / portTICK_PERIOD_MS);
+  }
+}
+
+// ---------- BUTTON 1 TASK (CORE 0) ----------
+void TaskButton1(void *pvParameters) {
+  pinMode(BUTTON1_PIN, INPUT_PULLUP);
+  while (1) {
+    if (digitalRead(BUTTON1_PIN) == LOW) {
+      Serial.println("[BUTTON1] Pressed!");
+      vTaskDelay(200 / portTICK_PERIOD_MS); // debounce
+    }
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+  }
+}
+
+// ---------- BUTTON 2 TASK (CORE 0) ----------
+void TaskButton2(void *pvParameters) {
+  pinMode(BUTTON2_PIN, INPUT_PULLUP);
+  while (1) {
+    if (digitalRead(BUTTON2_PIN) == LOW) {
+      Serial.println("[BUTTON2] Pressed!");
+      vTaskDelay(200 / portTICK_PERIOD_MS); // debounce
+    }
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+  }
+}
+
+// ---------- BUZZER TASK (CORE 1) ----------
+void TaskBuzzer(void *pvParameters) {
+  pinMode(BUZZ_PIN, OUTPUT);
+  Serial.println("[BUZZER] Task Started - Manual PWM");
+
+  while (1) {
+    for (int i = 0; i < 300; i++) {
+      digitalWrite(BUZZ_PIN, HIGH);
+      delayMicroseconds(625);  // ~800Hz
+      digitalWrite(BUZZ_PIN, LOW);
+      delayMicroseconds(625);
+    }
+    vTaskDelay(700 / portTICK_PERIOD_MS);
+  }
+}
+
+// ---------- POTENTIOMETER TASK (CORE 1) ----------
+void TaskPot(void *pvParameters) {
+  while (1) {
+    int value = analogRead(POT_PIN);
+    Serial.print("[POT] Value: ");
+    Serial.println(value);
+    vTaskDelay(150 / portTICK_PERIOD_MS);
+  }
+}
+
+// ---------- OLED TASK (CORE 0) ----------
+void TaskOLED(void *pvParameters) {
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("OLED Failed!");
+    vTaskDelete(NULL);
   }
   display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0,0);
-  display.println("OLED OK");
-  display.display();
 
-  // Inisialisasi Servo
-  myservo.attach(PIN_SERVO);
-
-  // Inisialisasi Stepper
-  stepper.setMaxSpeed(1000);
-  stepper.setAcceleration(500);
-  stepper.setEnablePin(PIN_STEPPER_ENABLE);
-  stepper.enableOutputs();
-
-  // --- Buat Tasks ---
-  // Sesuai permintaan: prioritas diubah-ubah
-  // tskIDLE_PRIORITY = 0 (Paling rendah)
-  // configMAX_PRIORITIES = 24 (Default)
-
-  // Core 0: Untuk I/O umum dan display
-  xTaskCreatePinnedToCore(taskOLED,        "OLED",     4096, NULL, 2, NULL, 0); // Prio 2
-  xTaskCreatePinnedToCore(taskLEDs,        "LEDs",     1024, NULL, 1, NULL, 0); // Prio 1
-  xTaskCreatePinnedToCore(taskButtons,     "Buttons",  2048, NULL, 2, NULL, 0); // Prio 2
-  xTaskCreatePinnedToCore(taskPotentiometer,"Pot",     2048, NULL, 2, NULL, 1); // Prio 2
-  xTaskCreatePinnedToCore(taskBuzzer,      "Buzzer",   2048, NULL, 1, NULL, 0); // Prio 1
-
-  // Core 1: Untuk timing-sensitive (Servo, Stepper, Encoder)
-  xTaskCreatePinnedToCore(taskEncoder,     "Encoder",  2048, NULL, 3, NULL, 1); // Prio 3 (Penting)
-  xTaskCreatePinnedToCore(taskServo,       "Servo",    2048, NULL, 2, NULL, 0); // Prio 2
-  xTaskCreatePinnedToCore(taskStepper,     "Stepper",  4096, NULL, 3, NULL, 1); // Prio 3 (Penting)
-}
-
-// ---------------------------------------------------
-// LOOP (dibiarkan kosong, RTOS yang bekerja)
-// ---------------------------------------------------
-void loop() {
-  // Kosong. Scheduler akan menjalankan semua task.
-  // vTaskDelay ini (dengan 1 'T') penting agar task IDLE tidak 100% CPU
-  vTaskDelay(1000 / portTICK_PERIOD_MS);
-}
-
-// ---------------------------------------------------
-// Implementasi Task
-// ---------------------------------------------------
-
-// Task 1: Mengupdate OLED
-void taskOLED(void *pvParameters) {
-  (void) pvParameters;
-  for (;;) {
+  while (1) {
     display.clearDisplay();
     display.setCursor(0, 0);
-    display.println("--- TASK AKTIF ---");
     display.setTextSize(1);
-    display.printf("Encoder: %ld\n", encoderPos);
-    display.printf("Pot: %d\n", analogRead(PIN_POT));
-    display.printf("Btn1: %d Btn2: %d\n", 
-                   digitalRead(PIN_BTN_1), digitalRead(PIN_BTN_2));
-    display.println("Core 0, Prio 2");
+    display.setTextColor(SSD1306_WHITE);
+    display.println("ESP32-S3");
+    display.println("Multitasking");
+    display.println("All Peripheral OK!");
     display.display();
-    vTaskDelay(100 / portTICK_PERIOD_MS); // Update 10x per detik
+    vTaskDelay(500 / portTICK_PERIOD_MS);
   }
 }
 
-// Task 2: Blinking LED
-void taskLEDs(void *pvParameters) {
-  (void) pvParameters;
-  for (;;) {
-    digitalWrite(PIN_LED_1, HIGH); // Nyalakan LED 1
-    vTaskDelay(300 / portTICK_PERIOD_MS);
-    digitalWrite(PIN_LED_1, LOW);
-    
-    digitalWrite(PIN_LED_2, HIGH); // Nyalakan LED 2
-    vTaskDelay(300 / portTICK_PERIOD_MS);
-    digitalWrite(PIN_LED_2, LOW);
-    
-    digitalWrite(PIN_LED_3, HIGH); // Nyalakan LED 3
-    vTaskDelay(300 / portTICK_PERIOD_MS);
-    digitalWrite(PIN_LED_3, LOW);
+// ---------- ENCODER TASK (CORE 1) ----------
+void TaskEncoder(void *pvParameters) {
+  pinMode(CLK_PIN, INPUT_PULLUP);
+  pinMode(DT_PIN, INPUT_PULLUP);
+
+  lastStateCLK = digitalRead(CLK_PIN);
+
+  while (1) {
+    int currentStateCLK = digitalRead(CLK_PIN);
+
+    if (currentStateCLK != lastStateCLK) {
+      if (digitalRead(DT_PIN) != currentStateCLK) encoderCount++;
+      else encoderCount--;
+
+      Serial.print("[ENCODER] Count: ");
+      Serial.println(encoderCount);
+    }
+
+    lastStateCLK = currentStateCLK;
+    vTaskDelay(5 / portTICK_PERIOD_MS);
   }
 }
 
-// Task 3: Membaca Button (print ke Serial)
-void taskButtons(void *pvParameters) {
-  (void) pvParameters;
-  bool btn1State = true, btn2State = true;
-  for (;;) {
-    if (digitalRead(PIN_BTN_1) == LOW && btn1State == true) {
-      Serial.println("Button 1 Ditekan!");
-      btn1State = false;
-    }
-    if (digitalRead(PIN_BTN_1) == HIGH && btn1State == false) {
-      btn1State = true;
-    }
+// ---------- SERVO TASK (CORE 0) ----------
+void TaskServo(void *pvParameters) {
+  myservo.setPeriodHertz(50);
+  myservo.attach(SERVO_PIN, 500, 2400);
 
-    if (digitalRead(PIN_BTN_2) == LOW && btn2State == true) {
-      Serial.println("Button 2 Ditekan!");
-      btn2State = false;
-    }
-    if (digitalRead(PIN_BTN_2) == HIGH && btn2State == false) {
-      btn2State = true;
-    }
-    vTaskDelay(50 / portTICK_PERIOD_MS); // Debounce
-  }
-}
-
-// Task 4: Membaca Potentiometer (print ke Serial)
-void taskPotentiometer(void *pvParameters) {
-  (void) pvParameters;
-  int lastPotValue = 0;
-  for (;;) {
-    int potValue = analogRead(PIN_POT);
-    // Hanya print jika ada perubahan signifikan
-    if (abs(potValue - lastPotValue) > 10) {
-      Serial.printf("Potentiometer Value: %d\n", potValue);
-      lastPotValue = potValue;
-    }
-    vTaskDelay(100 / portTICK_PERIOD_MS);
-  }
-}
-
-// Task 5: Membaca Rotary Encoder
-void taskEncoder(void *pvParameters) {
-  (void) pvParameters;
-  int lastClkState = digitalRead(PIN_ENCODER_CLK);
-  bool swState = true;
-
-  for (;;) {
-    // Baca Encoder
-    int clkState = digitalRead(PIN_ENCODER_CLK);
-    if (clkState != lastClkState) { // Ada gerakan
-      if (digitalRead(PIN_ENCODER_DT) != clkState) {
-        encoderPos++;
-        Serial.printf("Encoder +: %ld\n", encoderPos);
-      } else {
-        encoderPos--;
-        Serial.printf("Encoder -: %ld\n", encoderPos);
-      }
-    }
-    lastClkState = clkState;
-
-    // Baca Tombol Encoder
-    if (digitalRead(PIN_ENCODER_SW) == LOW && swState == true) {
-      Serial.println("Encoder Switch Ditekan!");
-      swState = false;
-    }
-    if (digitalRead(PIN_ENCODER_SW) == HIGH && swState == false) {
-      swState = true;
-    }
-    
-    vTaskDelay(1 / portTICK_PERIOD_MS); // Cek sangat cepat
-  }
-}
-
-// Task 6: Menggerakkan Servo (Sweep)
-void taskServo(void *pvParameters) {
-  (void) pvParameters;
-  for (;;) {
+  while (1) {
     myservo.write(0);
-    vTaskDelay(pdMS_TO_TICKS(500));  
-
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
     myservo.write(90);
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    myservo.write(180);
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
 }
 
-// Task 7: Menggerakkan Stepper
-void taskStepper(void *pvParameters) {
-  (void) pvParameters;
-  stepper.moveTo(2000); // Gerak ke posisi 2000
-  
-  for (;;) {
-  pinMode(STEP_PIN, OUTPUT);
-  pinMode(DIR_PIN, OUTPUT);
+// ---------- STEPPER TASK (CORE 1) ----------
+void TaskStepper(void *pvParameters) {
+  stepper.setMaxSpeed(800);
+  stepper.setAcceleration(400);
 
-  for (;;) {
-    // Spin CW
-    digitalWrite(DIR_PIN, HIGH);
-    for (int i = 0; i < stepsPerRev; i++) {
-      digitalWrite(STEP_PIN, HIGH);
-      ets_delay_us(stepDelayUS);
-      digitalWrite(STEP_PIN, LOW);
-      ets_delay_us(stepDelayUS);
-    }
+  while (1) {
+    stepper.moveTo(stepper.currentPosition() + 800);
+    while (stepper.distanceToGo() != 0) stepper.run();
+    vTaskDelay(300 / portTICK_PERIOD_MS);
 
-    vTaskDelay(pdMS_TO_TICKS(1000));  
-
-
-    digitalWrite(DIR_PIN, LOW);
-    for (int i = 0; i < stepsPerRev; i++) {
-      digitalWrite(STEP_PIN, HIGH);
-      ets_delay_us(stepDelayUS);
-      digitalWrite(STEP_PIN, LOW);
-      ets_delay_us(stepDelayUS);
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(1000));  
-  }
+    stepper.moveTo(stepper.currentPosition() - 800);
+    while (stepper.distanceToGo() != 0) stepper.run();
+    vTaskDelay(300 / portTICK_PERIOD_MS);
   }
 }
 
-// Task 8: Memainkan Nada di Buzzer (Beep... Beep...)
-// * VERSI PERBAIKAN MENGGUNAKAN tone() *
-void taskBuzzer(void *pvParameters) {
-  (void) pvParameters;
-  for(;;) {
-    // Pastikan wiring sudah benar ke PIN_BUZZER (GPIO 17)
-    Serial.println("Buzzer: Beep!");
-    
-    // Mainkan nada 1000Hz di pin buzzer
-    tone(PIN_BUZZER, 1000); 
-    vTaskDelay(100 / portTICK_PERIOD_MS); // Biarkan menyala selama 100ms
-    
-    // Matikan nada
-    noTone(PIN_BUZZER); 
-    vTaskDelay(2000 / portTICK_PERIOD_MS); // Diam selama 2 detik
-  }
+// =======================================================
+// ======================= SETUP =========================
+// =======================================================
+void setup() {
+  Serial.begin(115200);
+
+
+  // pilih task mana untuk dijalankan di core 0 / 1
+  // Core 0 Tasks
+  xTaskCreatePinnedToCore(TaskLED1,    "LED1",     2048, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(TaskLED2,    "LED2",     2048, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(TaskLED3,    "LED3",     2048, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(TaskButton1, "BUTTON1",  2048, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(TaskButton2, "BUTTON2",  2048, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(TaskOLED,    "OLED",     4096, NULL, 1, NULL, 0);
+
+   // Core 1 Tasks
+  xTaskCreatePinnedToCore(TaskServo,   "SERVO",    4096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(TaskBuzzer,  "BUZZER",   2048, NULL, 10, NULL, 1);
+  xTaskCreatePinnedToCore(TaskPot,     "POT",      2048, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(TaskEncoder, "ENCODER",  2048, NULL, 10, NULL, 1);
+  xTaskCreatePinnedToCore(TaskStepper, "STEPPER",  4096, NULL, 1, NULL, 1);
+}
+
+void loop() {
+  // Semua logika di-handle oleh task → loop tetap kosong
 }
